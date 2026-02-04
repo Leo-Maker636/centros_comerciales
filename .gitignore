@@ -1,2 +1,7 @@
 # Eliminar archivos raros
 desktop.ini
+
+# Eliminamos cualquier ambiente virtual de python creado. De hecho por la forma en que trabajo, mi ambiente de python .venv tiene una
+# forma diferente al ambiente creado desde windows. De todas maneras, esto efectivamente ignora cualquier ambiente virtual por el hecho 
+# de que al menos comparten el mismo nombre de directorio.
+.venv/
