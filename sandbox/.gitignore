@@ -8,3 +8,6 @@ busqueda_rucs/__pycache__/
 busqueda_rucs/.ruff_cache/
 busqueda_rucs/.ipynb_checkpoints/
 
+# Mis notas para commits.
+tablas_locales_CC/modificaciones.txt
+
