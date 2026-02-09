@@ -1,2 +1,15 @@
 # Ignorar el directorio de bases. Por seguridad y capacidad del repositorio
-bases/
+bases/*
+# Sin embargo, info_cc.db la base de datos que es un resultado si se require estar en acceso de todos los contribuyentes
+!bases/info_cc.db
+
+# A parte de esto vamos a ignorar todos los binarios y checkpoint generados tanto por python como por jupyter. Porque para eso ya 
+# tenemos a git. Entonces lo mejor es dejar es espacio de rabajpo bastante limpio. A parte que los binarios no se ejecutaran en otra 
+# con distintas específicaciones de la que fue generada.
+busqueda_rucs/__pycache__/
+busqueda_rucs/.ruff_cache/
+busqueda_rucs/.ipynb_checkpoints/
+
+# Mis notas para commits.
+tablas_locales_CC/modificaciones.txt
+
