@@ -3,6 +3,7 @@ from pathlib import Path
 import unicodedata
 import re
 from typing import Dict, Tuple
+import duckdb
 
 
 def _normalizar(s: str) -> str:
@@ -32,7 +33,7 @@ def delimitar_busqueda_establecimientos(ruta_base_rucs_sri: Path) -> pl.DataFram
         .with_columns(
             pl.col("direccion_completa")
             .str.contains(
-                r"(?i)^\s*PICHINCHA\s*/\s*QUITO\s*/\s*IÑAQUITO",
+                r"(?i)^\s*PICHINCHA\s*/\s*QUITO\s*/\s*PONCIANO",
                 literal=False,  # (?i) = case insensitive
             )
             .alias("cerca_CC")
@@ -41,7 +42,7 @@ def delimitar_busqueda_establecimientos(ruta_base_rucs_sri: Path) -> pl.DataFram
         .with_columns(
             pl.col("direccion_completa")
             .str.contains(
-                r"(?i)(AV|REPUBLICA|RIO|AMAZONAS|ELOY|ALFARO|MARIANA|JESUS)",
+                r"(?i)(JOSE|SUCRE|PRENSA|JOHN|KENNEDY|LEONARDO|DAVINCI|MARISCAL|SUCRE)",
                 literal=False,
             )
             .alias("cerca_CC")
@@ -135,11 +136,11 @@ def direccion_filtro(
     tb: pl.DataFrame, columna_direccion: str, threshold: float
 ) -> pl.DataFrame:
     calles_objetivo = [
-        "DE LA REPUBLICA",
-        "LA GRANJA",
-        "MARIANA DE JESUS",
-        "POTOSI",
-        "RIO AMAZONAS",  # <<-- PRINCIPAL
+        "ANTONIO JOSE DE SUCRE",
+        "DE LA PRENSA",
+        "JOHN F. KENNEDY",
+        "LEONARDO DAVINCI",
+        "MARISCAL SUCRE",
     ]
 
     def _calcular_score_regexp(direccion: str) -> Tuple[float, str]:
@@ -205,16 +206,19 @@ def encontrar_posibles_locales_jardin(threshold: float, threshold_ubicacion: flo
     )
 
     # En esta sección normalizamos todos los locales que hayamos podido extraer.
-    jardin_nombres = pl.read_csv(
-        "../tablas_locales_CC/El_Jardin_locales.tsv", separator="\t"
-    )
-    set_nombre_fantasia = set(jardin_nombres["LOCAL"])
+    base = duckdb.connect("../bases/info_cc.db")
+    condado_nombres = (
+        base.query(
+            "SELECT DISTINCT local_CC FROM locales WHERE centro_comercial = 'CONDADO';"
+        )
+    ).df()
+    set_nombre_fantasia = set(condado_nombres)
     set_nombre_fantasia_normalizado: set = {
         _normalizar(local) for local in set_nombre_fantasia
     }
 
     print(
-        f"Se tienen {len(set_nombre_fantasia_normalizado)} locales registrados en el CC: ElJardin."
+        f"Se tienen {len(set_nombre_fantasia_normalizado)} locales registrados en el CC: Condado."
     )
 
     tabla_filt_qgram_nom_fantasia = qgram_filtro(
@@ -222,7 +226,7 @@ def encontrar_posibles_locales_jardin(threshold: float, threshold_ubicacion: flo
         "nombre_fantasia_comercial",
         set_nombre_fantasia_normalizado,
         threshold=threshold,
-        cc="jardin",
+        cc="condado",
     )
 
     tabla_final = direccion_filtro(
@@ -268,6 +272,6 @@ if __name__ == "__main__":
         pl.col("score_filtrado"),
         pl.col("score_direccion"),
         pl.col("calles_direccion"),
-    ).write_excel("primeros_resultados_jardin.xlsx")
+    ).write_excel("primeros_resultados_condado.xlsx")
 
     print("Se termino!!")
