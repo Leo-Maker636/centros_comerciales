@@ -33,7 +33,7 @@ def delimitar_busqueda_establecimientos(ruta_base_rucs_sri: Path) -> pl.DataFram
         .with_columns(
             pl.col("direccion_completa")
             .str.contains(
-                r"(?i)^\s*PICHINCHA\s*/\s*QUITO\s*/\s*PONCIANO",
+                r"(?i)^\s*PICHINCHA\s*/\s*QUITO\s*/\s*(PONCEANO|COTOCOLLAO)",
                 literal=False,  # (?i) = case insensitive
             )
             .alias("cerca_CC")
@@ -91,8 +91,8 @@ def qgram_filtro(
     def _match_qgram_condition(
         s: str, dict_qgramas: Dict[str, set], minimumthreshold: float
     ) -> Tuple[str, float]:
-        s = _normalizar(s)
-        qgram_s = _qgrams(s)
+        s_normalizado = _normalizar(s)
+        qgram_s = _qgrams(s_normalizado)
 
         mejor, score = "", 0.0
         for k, qgram_k in dict_qgramas.items():
@@ -111,7 +111,7 @@ def qgram_filtro(
             )
         return "", score
 
-    dict_qgramas_bias = {local: _qgrams(local, q=3) for local in set_bias}
+    dict_qgramas_bias = {local: _qgrams(_normalizar(local)) for local in set_bias}
 
     tabla_filtrada = tb.with_columns(
         pl.col(nombre)
@@ -123,7 +123,9 @@ def qgram_filtro(
         .alias("mejor_candidato"),
         pl.col(nombre)
         .map_elements(
-            lambda x: _match_qgram_condition(x, dict_qgramas_bias, 0.28)[1],
+            lambda x: _match_qgram_condition(
+                x, dict_qgramas_bias, minimumthreshold=0.28
+            )[1],
             return_dtype=pl.Float64,
         )
         .alias("score_filtrado"),
@@ -165,7 +167,7 @@ def direccion_filtro(
             aciertos = 0
             for palabra in palabras_calle:
                 # Usamos \b para asegurar que coincida la palabra completa (word boundary)
-                if re.search(rf"\b{re.escape(palabra)}\b", dir_calles):
+                if re.search(rf"\b{re.escape(palabra)}\b", dir_calles, re.IGNORECASE):
                     aciertos += 1
 
             # Score de esta calle: palabras_encontradas / total_palabras_calle
@@ -209,9 +211,9 @@ def encontrar_posibles_locales_jardin(threshold: float, threshold_ubicacion: flo
     base = duckdb.connect("../bases/info_cc.db")
     condado_nombres = (
         base.query(
-            "SELECT DISTINCT local_CC FROM locales WHERE centro_comercial = 'CONDADO';"
+            "SELECT DISTINCT local_CC FROM locales WHERE centro_comercial = 'Condado Shopping';"
         )
-    ).df()
+    ).df()["local_CC"]
     set_nombre_fantasia = set(condado_nombres)
     set_nombre_fantasia_normalizado: set = {
         _normalizar(local) for local in set_nombre_fantasia
@@ -249,7 +251,7 @@ def filtrar_locales_buena_facturacion(fecha_ini: str, fecha_fin: str):
 
 if __name__ == "__main__":
     info_locales = encontrar_posibles_locales_jardin(
-        threshold=0.92, threshold_ubicacion=0.32
+        threshold=0.57, threshold_ubicacion=0
     )
     print(
         "Se filtro las siguientes cosas",
