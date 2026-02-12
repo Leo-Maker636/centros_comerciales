@@ -1,0 +1,2 @@
+[console_scripts]
+busqueda_rucs = busqueda_rucs.cli:main

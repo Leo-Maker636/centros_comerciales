@@ -1,0 +1,23 @@
+[project]
+name = "busqueda_rucs"
+version = "0.0.1"
+description = "CLI para busqueda_rucs de locales en centros comerciales"
+authors = [{name="Renato"},{name="Leo"}]
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "rich",
+]
+
+[project.scripts]
+busqueda_rucs = "busqueda_rucs.cli:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {""="src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,13 +1,33 @@
 import polars as pl
 from pathlib import Path
-import unicodedata
-import re
 from typing import Dict, Tuple
-import duckdb
-from Levenshtein import distance as lev
-import re
-from typing import Tuple
+from Levenshtein import distance as lev_dist
+import re, duckdb, unicodedata, logging, sys
 
+VERBOSE_INFO = 15
+logging.addLevelName(VERBOSE_INFO, "VERBOSE")
+
+
+class VerboseAdapter(logging.LoggerAdapter):
+    def verbose(self, msg, *args, **kwargs):
+        if self.isEnabledFor(VERBOSE_INFO):
+            self.log(VERBOSE_INFO, msg, *args, **kwargs)
+
+
+def iniciar_logger(verbose=False):
+    logger = logging.getLogger("module_logger")
+    logger.setLevel(logging.DEBUG)
+    handler = logging.StreamHandler(sys.stdout)
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%H:%M:%S")
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+
+    if verbose:
+        logger.setLevel(VERBOSE_INFO)
+    else:
+        logger.setLevel(logging.INFO)
+
+    return VerboseAdapter(logger, {})
 
 
 def _normalizar(s: str) -> str:
@@ -71,18 +91,19 @@ def delimitar_busqueda_establecimientos(ruta_base_rucs_sri: Path) -> pl.DataFram
     return base_rucs_cerca
 
 
-
-def qgram_filtro(
-    tb: pl.DataFrame, nombre: str, set_bias: set, cc: str, threshold=0.9
+def fuzzy_finder(
+    tb: pl.DataFrame, nombre: str, set_bias: set, cc: str, threshold_lev_qgram=0.9
 ) -> pl.DataFrame:
     """
-    Filtra una tabla tomando en cuenta los qgramas de cierta columna se parezcan a los de cierto set.
+    Agrega una tabla tomando en cuenta los qgramas de cierta columna se parezcan a los de cierto set.
     """
+
     def levenshtein_similarity(s1, s2):
         # Calcula un score de 0 a 1 basado en la distancia
         max_len = max(len(s1), len(s2))
-        if max_len == 0: return 1.0
-        return 1 - (lev(s1, s2) / max_len)
+        if max_len == 0:
+            return 1.0
+        return 1 - (lev_dist(s1, s2) / max_len)
 
     def _qgrams(s, q=3) -> set:
         """
@@ -90,7 +111,7 @@ def qgram_filtro(
         """
         return {s[i : i + q] for i in range(len(s) - q + 1)}
 
-    def _jaccard(a: set, b: set) -> float:
+    def _jaccard_similarity(a: set, b: set) -> float:
         """
         score de empate. Corazon para la comparación de los qgramas.
         """
@@ -98,8 +119,9 @@ def qgram_filtro(
             return 0.0
         return len(a & b) / len(a | b)
 
-    def _match_qgram_condition(
-        s: str, dict_qgramas: Dict[str, set],
+    def _match_condition(
+        s: str,
+        dict_qgramas: Dict[str, set],
         minimumthreshold=0.28,
         treshold_inf_segundo_filtro=0.4,
     ) -> Tuple[str, float]:
@@ -108,49 +130,41 @@ def qgram_filtro(
 
         mejor, score = "", 0.0
         for k, qgram_k in dict_qgramas.items():
-            sim = _jaccard(qgram_s, qgram_k)
+            sim = _jaccard_similarity(qgram_s, qgram_k)
             if sim > score:
                 mejor, score = k, sim
 
-        if score >= threshold:
+        if score >= threshold_lev_qgram:
             return mejor, score
-        elif treshold_inf_segundo_filtro <= score < threshold:
+        elif treshold_inf_segundo_filtro <= score < threshold_lev_qgram:
             score_lev = levenshtein_similarity(s_normalizado, mejor)
 
-            if score_lev > threshold:
+            if score_lev > threshold_lev_qgram:
                 return mejor, score_lev
-        
+
         elif (score >= minimumthreshold) & (cc in s.lower()):
             return mejor, 1.0
         return "", score
 
     dict_qgramas_bias = {local: _qgrams(_normalizar(local)) for local in set_bias}
 
-    tabla_filtrada = tb.with_columns(
+    tabla_con_indicadores = tb.with_columns(
         pl.col(nombre)
-        .map_elements(
-            lambda x: _match_qgram_condition(
-                x, dict_qgramas=dict_qgramas_bias
-            )[0]
-        )
+        .map_elements(lambda x: _match_condition(x, dict_qgramas=dict_qgramas_bias)[0])
         .alias("mejor_candidato"),
         pl.col(nombre)
         .map_elements(
-            lambda x: _match_qgram_condition(
-                x, dict_qgramas_bias
-            )[1],
+            lambda x: _match_condition(x, dict_qgramas_bias)[1],
             return_dtype=pl.Float64,
         )
         .alias("score_filtrado"),
-    ).filter((pl.col("mejor_candidato") != ""))
+    )
 
-    return tabla_filtrada
+    return tabla_con_indicadores
 
 
-def direccion_filtro(
-    tb: pl.DataFrame, columna_direccion: str, threshold: float
-) -> pl.DataFrame:
-     
+def address_finder(tb: pl.DataFrame, columna_direccion: str) -> pl.DataFrame:
+
     def _calcular_score_regexp(direccion: str) -> Tuple[float, str]:
         if not direccion:
             return 0.0, ""
@@ -158,24 +172,31 @@ def direccion_filtro(
         # 1. Extraer la sección de calles (PROVINCIA/CANTON/PARROQUIA/SECTOR/CALLES)
         partes = direccion.split("/")
         dir_calles_raw = partes[3] if len(partes) > 3 else direccion
-        
+
         # 2. LIMPIEZA Y TOKENIZACIÓN (El "Flojo" Inteligente)
         # re.split(r"[.\s]+") separa por puntos y espacios: "JOHN F. KENNEDY" -> {"john", "f", "kennedy"}
         # Usar un SET elimina el problema de buscar "letras en la mitad" (como ANA en CARDENAS)
-        palabras_en_direccion = set(p.lower() for p in re.split(r"[.\s]+", dir_calles_raw) if p)
+        palabras_en_direccion = set(
+            p.lower() for p in re.split(r"[.\s]+", dir_calles_raw) if p
+        )
 
         # 3. DEFINICIÓN DE PESOS (Sets para búsqueda instantánea O(1))
         # Desglosamos las calles principales en palabras individuales
         set_principales = set()
         for calle in [
-            "ANTONIO", "JOSE", "SUCRE", "PRENSA", "JOHN", "KENNEDY", 
-            "LEONARDO", "DAVINCI", "MARISCAL"
+            "ANTONIO",
+            "JOSE",
+            "SUCRE",
+            "PRENSA",
+            "JOHN",
+            "KENNEDY",
+            "LEONARDO",
+            "DAVINCI",
+            "MARISCAL",
         ]:
             set_principales.add(calle.lower())
 
-        set_contexto = {
-            "av", "san", "cardenas", "caton", "procel", "juan"
-        }
+        set_contexto = {"av", "san", "cardenas", "caton", "procel", "juan"}
 
         suma_scores = 0.0
 
@@ -185,11 +206,13 @@ def direccion_filtro(
             if palabra in set_principales:
                 suma_scores += 1.0  # Peso para nombres de calles clave
             elif palabra in set_contexto:
-                suma_scores += 2.0  # Peso para contexto específico (según tu lógica original)
+                suma_scores += (
+                    2.0  # Peso para contexto específico (según tu lógica original)
+                )
 
         return float(suma_scores), dir_calles_raw
 
-    calles_principales= [
+    calles_principales = [
         "ANTONIO JOSE DE SUCRE",
         "DE LA PRENSA",
         "JOHN F. KENNEDY",
@@ -197,65 +220,18 @@ def direccion_filtro(
         "MARISCAL SUCRE",
     ]
 
-    # strings_contexto = [
-    #     "av",
-    #     "san",
-    #     "cardenas",
-    #     "caton",
-    #     "procel",
-    #     "juan"
-    # ]
-
-    # calles_objetivo = calles_principales + strings_contexto
-    
-
-    # def _calcular_score_regexp(direccion: str) -> Tuple[float, str]:
-    #     if not direccion:
-    #         return 1.0, ""
-
-    #     dir_calles = direccion.split("/")[
-    #         3
-    #     ]  # PROVINCIA/CANTON/PARROQUIA/SECTOR/CALLES, me quedo con calles
-    #      # Alguna forma de decir que la calle principal cuenta más
-    #     suma_scores = 0.0
-
-    #     for calle in calles_objetivo:
-    #         palabras_calle = calle.split()
-
-    #         if not palabras_calle:
-    #             continue
-
-    #         # Contamos cuántas palabras de la calle objetivo existen en la dirección
-    #         aciertos = 0
-    #         for palabra in palabras_calle:
-    #             # Usamos \b para asegurar que coincida la palabra completa (word boundary)
-    #             if re.search(rf"\b{re.escape(palabra)}\b", dir_calles, re.IGNORECASE):
-    #                 if palabra in calles_principales:
-    #                     aciertos += 1
-    #                 elif palabra in  strings_contexto:
-    #                     aciertos +=2
-
-    #         # Score de esta calle fija dada por nosotros 
-    #         suma_scores += aciertos
-
-    #     # Suma de todos los score
-    #     return suma_scores, dir_calles
-    
     palabras_principales = [p for calle in calles_principales for p in calle.split()]
 
     tabla_con_score_direccion = tb.with_columns(
         pl.col(columna_direccion)
         .map_elements(lambda x: _calcular_score_regexp(x)[0])
         .alias("score_direccion"),
-        pl.col(columna_direccion)
-        .map_elements(lambda x: _calcular_score_regexp(x)[1])
-        .alias("calles_direccion"),
-        ).with_columns(
+    ).with_columns(
         # Normalización: (valor / max) * 2
         (pl.col("score_direccion") / len(palabras_principales) * 2)
         .fill_nan(0)
         .alias("score_direccion")
-        )
+    )
 
     return tabla_con_score_direccion
 
@@ -265,7 +241,9 @@ def encontrar_posibles_locales_jardin(threshold: float, threshold_ubicacion: flo
     Proceso principal de emparejamiento de numeros_establecimiento a partir de nombres de locales. Motores: "q-gramas"
     """
 
-    ruta_base_rucs_sri = Path(r"C:\Users\anali\OneDrive - PUBLIPROMUEVE S.A\Ruben Freire's files - CENTROS COMERCIALES\sandbox\bases\base_rucs_sri.parquet")
+    ruta_base_rucs_sri = Path(
+        r"C:\Users\anali\OneDrive - PUBLIPROMUEVE S.A\Ruben Freire's files - CENTROS COMERCIALES\sandbox\bases\base_rucs_sri.parquet"
+    )
     rucs_cerca = delimitar_busqueda_establecimientos(
         ruta_base_rucs_sri=ruta_base_rucs_sri
     )
@@ -276,7 +254,9 @@ def encontrar_posibles_locales_jardin(threshold: float, threshold_ubicacion: flo
     )
 
     # En esta sección normalizamos todos los locales que hayamos podido extraer.
-    base = duckdb.connect(r"C:/Users/anali/OneDrive - PUBLIPROMUEVE S.A/Ruben Freire's files - CENTROS COMERCIALES/sandbox/bases/info_cc.db")
+    base = duckdb.connect(
+        r"C:/Users/anali/OneDrive - PUBLIPROMUEVE S.A/Ruben Freire's files - CENTROS COMERCIALES/sandbox/bases/info_cc.db"
+    )
     condado_nombres = (
         base.query(
             "SELECT DISTINCT local_CC FROM locales WHERE centro_comercial = 'Condado Shopping';"
@@ -291,24 +271,25 @@ def encontrar_posibles_locales_jardin(threshold: float, threshold_ubicacion: flo
         f"Se tienen {len(set_nombre_fantasia_normalizado)} locales registrados en el CC: Condado."
     )
 
-    tabla_filt_qgram_nom_fantasia = qgram_filtro(
+    tabla_filt_qgram_nom_fantasia = fuzzy_finder(
         rucs_cerca,
         "nombre_fantasia_comercial",
         set_nombre_fantasia_normalizado,
-        threshold=threshold,
+        threshold_lev_qgram=threshold,
         cc="condado",
     )
 
-    tabla_final = direccion_filtro(
+    tabla_final = address_finder(
         tabla_filt_qgram_nom_fantasia,
         "direccion_completa",
-        threshold=threshold_ubicacion,
     )
 
     tabla_final = tabla_final.with_columns(
         (pl.col("score_filtrado") * 2).alias("score_nombre_normalizado")
     ).with_columns(
-        (pl.col("score_nombre_normalizado") * pl.col("score_direccion")).alias("score_producto_final")
+        (pl.col("score_nombre_normalizado") * pl.col("score_direccion")).alias(
+            "score_producto_final"
+        )
     )
 
     return tabla_final
@@ -324,6 +305,7 @@ def filtrar_locales_buena_facturacion(fecha_ini: str, fecha_fin: str):
 
 
 if __name__ == "__main__":
+
     info_locales = encontrar_posibles_locales_jardin(
         threshold=0.85, threshold_ubicacion=0
     )
@@ -348,16 +330,20 @@ if __name__ == "__main__":
         pl.col("score_filtrado"),
         pl.col("score_direccion"),
         pl.col("score_producto_final"),
-        pl.col("calles_direccion")
+        pl.col("calles_direccion"),
     )
 
-    desc_info = info_locales['nombre_fantasia_comercial'].value_counts().sort("count", descending=False)
-    numeros_unos = len(desc_info.filter(
-        (pl.col("count") == 1)
-    ))
+    desc_info = (
+        info_locales["nombre_fantasia_comercial"]
+        .value_counts()
+        .sort("count", descending=False)
+    )
+    numeros_unos = len(desc_info.filter((pl.col("count") == 1)))
     print(f"Hay estos unos: {numeros_unos}.\n {desc_info}")
-    info_locales.write_excel(r"C:\Users\anali\OneDrive - PUBLIPROMUEVE S.A\Ruben Freire's files - CENTROS COMERCIALES\sandbox\busqueda_rucs\primeros_resultados_condado.xlsx")
+    info_locales.write_excel(
+        r"C:\Users\anali\OneDrive - PUBLIPROMUEVE S.A\Ruben Freire's files - CENTROS COMERCIALES\sandbox\busqueda_rucs\primeros_resultados_condado.xlsx"
+    )
 
-    #LOS QUE ESTAMOS SEGUROS SON LOS QUE APARECEN UNA SOLA VEZ EN LOS ENCONTRADOS CON BUEN SCORE(DIRRECCION) Y HAY QUE
-    #ANLIZAR MAS FINO LOS QUE TIENEN NOMBRE REPETIDO Y CON BUEN SCORE EN NOMBRE.
+    # LOS QUE ESTAMOS SEGUROS SON LOS QUE APARECEN UNA SOLA VEZ EN LOS ENCONTRADOS CON BUEN SCORE(DIRRECCION) Y HAY QUE
+    # ANLIZAR MAS FINO LOS QUE TIENEN NOMBRE REPETIDO Y CON BUEN SCORE EN NOMBRE.
     print("Se termino!!")

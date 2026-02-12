@@ -1,0 +1,8 @@
+Metadata-Version: 2.4
+Name: busqueda_rucs
+Version: 0.0.1
+Summary: CLI para busqueda_rucs de locales en centros comerciales
+Author: Renato, Leo
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: rich

@@ -2,6 +2,8 @@
 desktop.ini
 mypy.ini
 .mypy_cache/
+# Eliminar la base_rucs_sri por ser demasiado pesado
+bases/base_rucs_sri.parquet
 
 # Eliminamos cualquier ambiente virtual de python creado. De hecho por la forma en que trabajo, mi ambiente de python .venv tiene una
 # forma diferente al ambiente creado desde windows. De todas maneras, esto efectivamente ignora cualquier ambiente virtual por el hecho 
