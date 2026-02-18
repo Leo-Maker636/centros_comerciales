@@ -7,6 +7,68 @@ from Levenshtein import distance as lev_dist
 import re, duckdb, unicodedata, time
 from importlib.resources import files, as_file
 
+palabras_contexto_espanol = [
+    "el",
+    "la",
+    "los",
+    "las",
+    "lo",
+    "un",
+    "una",
+    "unos",
+    "unas",
+    "de",
+    "del",
+    "al",
+    "a",
+    "ante",
+    "bajo",
+    "con",
+    "contra",
+    "desde",
+    "durante",
+    "en",
+    "entre",
+    "hacia",
+    "hasta",
+    "mediante",
+    "para",
+    "por",
+    "segun",
+    "sin",
+    "sobre",
+    "tras",
+    "y",
+    "e",
+    "o",
+    "u",
+    "calle",
+    "avenida",
+    "av",
+    "av.",
+    "pasaje",
+    "psje",
+    "paso",
+    "barrio",
+    "sector",
+    "urbanizacion",
+    "urb",
+    "ciudadela",
+    "cdla",
+    "km",
+    "kilometro",
+    "manzana",
+    "mz",
+    "solar",
+    "lote",
+    "etapa",
+    "bloque",
+    "edificio",
+    "edif",
+    "oficina",
+    "of",
+]
+
 
 def resolver_rutas() -> Dict[str, Path]:
     try:
@@ -74,67 +136,6 @@ def delimitar_busqueda_establecimientos(
     """
     Esta parte realiza una delimitación según %PROVINCIA%/%CANTON%/%PARROQUIA% en los que el centro_comercial se encuentra.
     """
-    palabras_contexto_espanol = [
-        "el",
-        "la",
-        "los",
-        "las",
-        "lo",
-        "un",
-        "una",
-        "unos",
-        "unas",
-        "de",
-        "del",
-        "al",
-        "a",
-        "ante",
-        "bajo",
-        "con",
-        "contra",
-        "desde",
-        "durante",
-        "en",
-        "entre",
-        "hacia",
-        "hasta",
-        "mediante",
-        "para",
-        "por",
-        "segun",
-        "sin",
-        "sobre",
-        "tras",
-        "y",
-        "e",
-        "o",
-        "u",
-        "calle",
-        "avenida",
-        "av",
-        "av.",
-        "pasaje",
-        "psje",
-        "paso",
-        "barrio",
-        "sector",
-        "urbanizacion",
-        "urb",
-        "ciudadela",
-        "cdla",
-        "km",
-        "kilometro",
-        "manzana",
-        "mz",
-        "solar",
-        "lote",
-        "etapa",
-        "bloque",
-        "edificio",
-        "edif",
-        "oficina",
-        "of",
-    ]
 
     parroquias_posibles_regexp = "|".join(parroquias_posibles.split(","))
     regexp_ppc = (
@@ -316,7 +317,10 @@ def fuzzy_mapping(
 
 
 def nearness_mapping(
-    tb: pl.DataFrame, columna_direccion: str, perimetro_calles: str
+    tb: pl.DataFrame,
+    columna_direccion: str,
+    perimetro_calles: str,
+    palabras_contexto: str,
 ) -> pl.DataFrame:
     """
     Asigna o agrupa valores de direcciones en un DataFrame según proximidad o similitud.
@@ -334,6 +338,7 @@ def nearness_mapping(
         pl.DataFrame: Una copia del DataFrame original con la columna de direcciones procesada,
         mostrando valores agrupados o mapeados según proximidad o similitud.
     """
+    calles_principales = perimetro_calles.split(",")
 
     def _calcular_score_regexp(direccion: str) -> Tuple[float, str]:
         if not direccion:
@@ -353,20 +358,19 @@ def nearness_mapping(
         # 3. DEFINICIÓN DE PESOS (Sets para búsqueda instantánea O(1))
         # Desglosamos las calles principales en palabras individuales
         set_principales = set()
-        for calle in [
-            "ANTONIO",
-            "JOSE",
-            "SUCRE",
-            "PRENSA",
-            "JOHN",
-            "KENNEDY",
-            "LEONARDO",
-            "DAVINCI",
-            "MARISCAL",
-        ]:
+        nombres_significativos = []
+        for nombre_calle in calles_principales:
+            palabras = nombre_calle.split(" ")
+            palabras_significativas = [
+                palabra
+                for palabra in palabras
+                if palabra not in palabras_contexto_espanol
+            ]
+            nombres_significativos.extend(palabras_significativas)
+        for calle in nombres_significativos:
             set_principales.add(calle.lower())
 
-        set_contexto = {"av", "san", "cardenas", "caton", "procel", "juan"}
+        set_contexto = set(palabras_contexto)
 
         suma_scores = 0.0
 
@@ -381,8 +385,6 @@ def nearness_mapping(
                 )
 
         return float(suma_scores), dir_calles_raw
-
-    calles_principales = perimetro_calles.split(",")
 
     palabras_principales = [p for calle in calles_principales for p in calle.split()]
 
@@ -429,6 +431,8 @@ def encontrar_locales(
     set_nombres_fantasia_normalizado = None
     cc_nombre_cc_base = cc_metadata[0]
     cc_palabra_clave = cc_metadata[1]
+    perimetro_calles_cc = None
+    palabras_contexto_cc = None
     RUTA_base_info_cc = None
     # Establecer la conexion con la base del proyecto
     with console.status(
@@ -481,9 +485,13 @@ def encontrar_locales(
                     raise ValueError(
                         f"No se encontro información de ubicación para {cc_nombre_cc_base}"
                     )
-                provincia_cc, canton_cc, parroquias_posibles_cc, perimetro_calles_cc = (
-                    row
-                )
+                (
+                    provincia_cc,
+                    canton_cc,
+                    parroquias_posibles_cc,
+                    perimetro_calles_cc,
+                    palabras_contexto_cc,
+                ) = row
                 rucs_cerca = delimitar_busqueda_establecimientos(
                     ruta_base_rucs_sri=ruta_base_rucs_sri,
                     cc_nombre=cc_nombre_cc_base,
@@ -560,10 +568,16 @@ def encontrar_locales(
                 threshold_lev_qgram=threshold,
                 cc=cc_palabra_clave,
             )
+            if (not perimetro_calles_cc) or (not palabras_contexto_cc):
+                raise ValueError(
+                    f"No se pudo encontrar información sobre calles y 'contexto' para {cc_nombre_cc_base}"
+                )
 
             tabla_final = nearness_mapping(
                 tabla_filt_qgram_nom_fantasia,
                 "direccion_completa",
+                perimetro_calles=perimetro_calles_cc,
+                palabras_contexto=palabras_contexto_cc,
             )
 
             tabla_final = tabla_final.with_columns(
