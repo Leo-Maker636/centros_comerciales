@@ -5,6 +5,7 @@ from typing import Dict, List, Any
 from dotenv import load_dotenv
 from contextlib import closing
 from mysql.connector import ProgrammingError
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import mysql.connector, os, sqlparse, re
 from importlib.resources import files, as_file
 
@@ -90,16 +91,16 @@ def guardar_resultados(
 
     total_filas = len(all_rows)
     if total_filas == 0:
-        console.print(f"[yellow]No hay datos para guardar para {fecha}[/yellow]")
+        console.print(f"[yellow] No hay datos para guardar para {fecha}[/yellow]")
         return
 
-    console.print(f"[green]Se obtuvieron {total_filas} filas en total[/green]")
+    console.print(f"[green] Se obtuvieron {total_filas} filas en total[/green]")
 
     # Obtener nombres de columnas
     columnas = [desc[0] for desc in cur.description]
 
     # Convertir a LazyFrame de Polars
-    df_polars = pl.LazyFrame(all_rows, schema=columnas)
+    df_polars = pl.LazyFrame(all_rows, schema=columnas, orient="row")
 
     # Guardar como parquet en modo streaming
     df_polars.sink_parquet(
@@ -107,17 +108,61 @@ def guardar_resultados(
     )
 
     console.print(
-        f"[blue]Archivo guardado en {RUTA_backups / f'facturas_{fecha}.parquet'}[/blue]"
+        f"[blue in cyan] Archivo guardado en {RUTA_backups / f'facturas_{fecha}.parquet'}[/blue in cyan]"
     )
 
 
+def procesar_query(
+    ruta_credenciales_data_fact: Path,
+    RUTA_sql_executables: Path,
+    query: str,
+    RUTA_backups: Path,
+) -> int:
+    console = Console()
+    load_dotenv(ruta_credenciales_data_fact, override=True)
+    user = os.getenv("USER_DATABASE")
+    password = os.getenv("PASSWORD_DATABASE")
+    host = os.getenv("HOST_DATABASE")
+    database = os.getenv("NAME_DATABASE")
+    port = os.getenv("PORT_DATABASE")
+    if (not user) or (not password) or (not host) or (not database) or (not port):
+        raise ValueError(
+            "No se ha encontrado una de las siguientes variables de entorno: `user`, `password`, `host`, `database`, `port`."
+        )
+    conexion = mysql.connector.connect(
+        host=host, user=user, password=password, database=database, port=port
+    )
+    sql_text = ""
+    with open(RUTA_sql_executables, "r", encoding="utf8") as file:
+        sql_text = file.read()
+    sql_text = sqlparse.format(sql_text, strip_comments=True)
+
+    fecha_match = re.search("[0-9]{4}_[0-9]{2}", query)
+    if not fecha_match:
+        return 1
+    fecha = fecha_match.group(0)
+    with console.status(f"facturas_{fecha}") as status:
+        with closing(conexion) as conn:
+            with conn.cursor() as cur:
+                guardar_resultados(
+                    cur=cur, fecha=fecha, query=query, RUTA_backups=RUTA_backups
+                )
+            status.update(f"Se ha procesado facturas_{fecha}")
+    return 0
+
+
 def leer_y_guardar_datos_mysql(
-    ruta_credenciales_data_fact: Path, rucs_a_buscar: List[str]
+    ruta_credenciales_data_fact: Path,
+    id_establecimientos_a_buscar: List[str],
+    param_verbose: bool = False,
 ):
     RUTA_sql_executables = resolver_rutas()["RUTA_sql_executables"]
     RUTA_backups = resolver_rutas()["RUTA_backups"]
     console = Console()
-    rucs_a_buscar_sql = ",".join(["'" + ruc + "'" for ruc in rucs_a_buscar])
+    id_establecimientos_a_buscar_sql = ",".join(
+        [ruc for ruc in id_establecimientos_a_buscar]
+    )
+
     try:
         if not ruta_credenciales_data_fact.exists():
             console.print()
@@ -129,38 +174,34 @@ def leer_y_guardar_datos_mysql(
             raise FileNotFoundError(
                 "No se ha encontrado el archivo de traida sql que debe llamarse `consulta_formato.sql`."
             )
-
-        load_dotenv(ruta_credenciales_data_fact, override=True)
-        user = os.getenv("USER_DATABASE")
-        password = os.getenv("PASSWORD_DATABASE")
-        host = os.getenv("HOST_DATABASE")
-        database = os.getenv("NAME_DATABASE")
-        port = os.getenv("PORT_DATABASE")
-        if (not user) or (not password) or (not host) or (not database) or (not port):
-            raise ValueError(
-                "No se ha encontrado una de las siguientes variables de entorno: `user`, `password`, `host`, `database`, `port`."
-            )
-        conexion = mysql.connector.connect(
-            host=host, user=user, password=password, database=database, port=port
-        )
         sql_text = ""
         with open(RUTA_sql_executables, "r", encoding="utf8") as file:
             sql_text = file.read()
+        sql_text = sqlparse.format(sql_text, strip_comments=True)
         queries = [
-            q.strip().replace("{rucs_a_buscar}", rucs_a_buscar_sql)
-            for q in sqlparse.split(sql_text)
+            q.strip().replace("{rucs_a_buscar}", id_establecimientos_a_buscar_sql)
+            for q in sql_text.split(";")
             if q.strip()
         ]
-        with closing(conexion) as conn:
-            for query in queries:
-                fecha_match = re.search("[0-9]{4}_[0-9]{2}", query)
-                if not fecha_match:
-                    continue
-                fecha = fecha_match.group(0)
-                with conn.cursor() as cur:
-                    guardar_resultados(
-                        cur=cur, fecha=fecha, query=query, RUTA_backups=RUTA_backups
-                    )
+        dummy_query = queries[0]
+        if param_verbose:
+            console.print(f"Una query de ejemplo es:\n{dummy_query}")
+
+        with ProcessPoolExecutor(max_workers=6) as executor:
+            futures = [
+                executor.submit(
+                    procesar_query,
+                    ruta_credenciales_data_fact,
+                    RUTA_sql_executables,
+                    query,
+                    RUTA_backups,
+                )
+                for query in queries
+            ]
+
+            for future in as_completed(futures):
+                console.print(future.result())
+
     except ProgrammingError as e:
         console.print(f"[red] El motor de MySQL reporta el siguiente error:\n{e}")
     except FileNotFoundError:
