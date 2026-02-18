@@ -10,7 +10,7 @@ busqueda_rucs/
 └── src/
     busqueda_rucs/
     ├── __init__.py
-    ├── __main__.py
+    ├── cli.py
     └── procesar.py
 
 """
