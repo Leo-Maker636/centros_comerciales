@@ -62,10 +62,110 @@ def _normalizar(s: str) -> str:
     return s
 
 
-def delimitar_busqueda_establecimientos(ruta_base_rucs_sri: Path) -> pl.DataFrame:
+def delimitar_busqueda_establecimientos(
+    ruta_base_rucs_sri: Path,
+    cc_nombre: str,
+    provincia: str,
+    canton: str,
+    parroquias_posibles: str,
+    perimetro_calles: str,
+    param_verbose: bool = False,
+) -> pl.DataFrame:
     """
     Esta parte realiza una delimitación según %PROVINCIA%/%CANTON%/%PARROQUIA% en los que el centro_comercial se encuentra.
     """
+    palabras_contexto_espanol = [
+        "el",
+        "la",
+        "los",
+        "las",
+        "lo",
+        "un",
+        "una",
+        "unos",
+        "unas",
+        "de",
+        "del",
+        "al",
+        "a",
+        "ante",
+        "bajo",
+        "con",
+        "contra",
+        "desde",
+        "durante",
+        "en",
+        "entre",
+        "hacia",
+        "hasta",
+        "mediante",
+        "para",
+        "por",
+        "segun",
+        "sin",
+        "sobre",
+        "tras",
+        "y",
+        "e",
+        "o",
+        "u",
+        "calle",
+        "avenida",
+        "av",
+        "av.",
+        "pasaje",
+        "psje",
+        "paso",
+        "barrio",
+        "sector",
+        "urbanizacion",
+        "urb",
+        "ciudadela",
+        "cdla",
+        "km",
+        "kilometro",
+        "manzana",
+        "mz",
+        "solar",
+        "lote",
+        "etapa",
+        "bloque",
+        "edificio",
+        "edif",
+        "oficina",
+        "of",
+    ]
+
+    parroquias_posibles_regexp = "|".join(parroquias_posibles.split(","))
+    regexp_ppc = (
+        r"(?i)^\s*"
+        + f"{provincia}"
+        + r"\s*/\s*"
+        + f"{canton}"
+        + r"\s*/\s*("
+        + f"{parroquias_posibles_regexp}"
+        + r")"
+    )
+    nombres_calles = perimetro_calles.split(",")
+    nombres_significativos = []
+
+    for nombre_calle in nombres_calles:
+        palabras = nombre_calle.split(" ")
+        palabras_significativas = [
+            palabra for palabra in palabras if palabra not in palabras_contexto_espanol
+        ]
+        nombres_significativos.extend(palabras_significativas)
+
+    regexp_calles = r"(?i)(" + "|".join(nombres_significativos) + ")"
+    if param_verbose:
+        mensaje_verbose = (
+            f"Para delimitar {cc_nombre} usamos las siguientes [bold]regexp:\n",
+            "[blue bold]regexp provincia, canton, parroquia: ",
+            regexp_ppc,
+            "[blue bold]regexp perimetro calles: ",
+            regexp_calles,
+        )
+        Console().print(mensaje_verbose)
 
     try:
         base_rucs_cerca: pl.DataFrame = (
@@ -74,7 +174,7 @@ def delimitar_busqueda_establecimientos(ruta_base_rucs_sri: Path) -> pl.DataFram
             .with_columns(
                 pl.col("direccion_completa")
                 .str.contains(
-                    r"(?i)^\s*PICHINCHA\s*/\s*QUITO\s*/\s*(PONCEANO|COTOCOLLAO)",
+                    regexp_ppc,
                     literal=False,  # (?i) = case insensitive
                 )
                 .alias("cerca_CC")
@@ -83,7 +183,7 @@ def delimitar_busqueda_establecimientos(ruta_base_rucs_sri: Path) -> pl.DataFram
             .with_columns(
                 pl.col("direccion_completa")
                 .str.contains(
-                    r"(?i)(JOSE|SUCRE|PRENSA|JOHN|KENNEDY|LEONARDO|DAVINCI|MARISCAL|SUCRE)",
+                    regexp_calles,
                     literal=False,
                 )
                 .alias("cerca_CC")
@@ -215,7 +315,9 @@ def fuzzy_mapping(
     return tabla_con_indicadores
 
 
-def nearness_mapping(tb: pl.DataFrame, columna_direccion: str) -> pl.DataFrame:
+def nearness_mapping(
+    tb: pl.DataFrame, columna_direccion: str, perimetro_calles: str
+) -> pl.DataFrame:
     """
     Asigna o agrupa valores de direcciones en un DataFrame según proximidad o similitud.
 
@@ -280,13 +382,7 @@ def nearness_mapping(tb: pl.DataFrame, columna_direccion: str) -> pl.DataFrame:
 
         return float(suma_scores), dir_calles_raw
 
-    calles_principales = [
-        "ANTONIO JOSE DE SUCRE",
-        "DE LA PRENSA",
-        "JOHN F. KENNEDY",
-        "LEONARDO DAVINCI",
-        "MARISCAL SUCRE",
-    ]
+    calles_principales = perimetro_calles.split(",")
 
     palabras_principales = [p for calle in calles_principales for p in calle.split()]
 
@@ -376,8 +472,26 @@ def encontrar_locales(
                 if not Path(RUTA_base_rucs_sri).exists():
                     raise FileNotFoundError("No se pudo encontrar la base de rucs_sri.")
                 ruta_base_rucs_sri = Path(RUTA_base_rucs_sri)
+                row = (
+                    base.query(
+                        f"SELECT provincia, canton, parroquia, perimetro_calles FROM centros_comerciales WHERE centro_comercial = '{cc_nombre_cc_base}';"
+                    )
+                ).fetchone()
+                if not row:
+                    raise ValueError(
+                        f"No se encontro información de ubicación para {cc_nombre_cc_base}"
+                    )
+                provincia_cc, canton_cc, parroquias_posibles_cc, perimetro_calles_cc = (
+                    row
+                )
                 rucs_cerca = delimitar_busqueda_establecimientos(
-                    ruta_base_rucs_sri=ruta_base_rucs_sri
+                    ruta_base_rucs_sri=ruta_base_rucs_sri,
+                    cc_nombre=cc_nombre_cc_base,
+                    provincia=provincia_cc,
+                    canton=canton_cc,
+                    parroquias_posibles=parroquias_posibles_cc,
+                    perimetro_calles=perimetro_calles_cc,
+                    param_verbose=param_verbose,
                 )
                 # Elimina
                 del ruta_base_rucs_sri
