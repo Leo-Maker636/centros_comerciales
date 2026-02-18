@@ -1,3 +1,4 @@
 # Eliminar los resultados de la ejecución.
 src/transformar_fact/backups/
 id_establecimiento_test.txt
+src/transformar_fact.egg-info/
