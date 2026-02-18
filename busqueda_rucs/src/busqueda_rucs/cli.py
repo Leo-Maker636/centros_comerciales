@@ -15,7 +15,6 @@ CENTROS_COMERCIALES: List[Tuple[str, str]] = [
     ("Portal Shopping", "shopping"),
     ("Paseo San Francisco", "francisco"),
     ("El Jardin", "jardin"),
-    ("Recreo", "recreo"),
     ("Quicentro", "quicentro"),
     ("Mall del Pacifico", "pacifico"),
 ]
