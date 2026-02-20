@@ -84,42 +84,7 @@ CREATE TABLE centros_comerciales (
     canton NOT LIKE '%,%'
     and canton = lower(canton)
   ) NOT NULL,
-  parroquia VARCHAR(200) CHECK(
-    regexp_full_match(parroquia, '^[a-z0-9 ,]+$')
-    and parroquia = lower(parroquia)
-  ) NOT NULL,
-  perimetro_calles VARCHAR(800) CHECK(
-    regexp_full_match(perimetro_calles, '^[a-z0-9 ,]+$')
-    and perimetro_calles = lower(perimetro_calles)
-  ) NOT NULL,
-);
-
-INSERT INTO centros_comerciales (centro_comercial, provincia, canton, parroquia, perimetro_calles)
-(
-  SELECT
-    centro_comercial, provincia, canton, parroquia, perimetro_calles
-  FROM (
-    SELECT 
-      centro_comercial,
-      provincia,
-      canton,
-      parroquia,
-      perimetro_calles,
-      CASE 
-        WHEN regexp_split_to_array(parroquia, ',') = list_transform(
-          regexp_split_to_array(parroquia, ','),
-          lambda x: regexp_replace(regexp_replace(x, '^ +| +$', ''), ' +', ' ')
-        ) THEN TRUE
-        ELSE FALSE
-      END AS constrain_parroquia,
-      CASE 
-        WHEN regexp_split_to_array(perimetro_calles, ',') = list_transform(
-          regexp_split_to_array(perimetro_calles, ','),
-          lambda x: regexp_replace(regexp_replace(x, '^ +| +$', ''), ' +', ' ')
-        ) THEN TRUE
-        ELSE FALSE
-      END AS constrain_perimetro_calles
-    FROM read_csv('centros_comerciales.psv', sep='|')
-    WHERE constrain_parroquia IS NOT FALSE AND constrain_perimetro_calles IS NOT FALSE
-  )
+  parroquia VARCHAR[] NOT NULL,
+  perimetro_calles VARCHAR[] NOT NULL,
+  struct_contexto STRUCT(palabra VARCHAR, frecuencia INTEGER)[] NOT NULL,
 );

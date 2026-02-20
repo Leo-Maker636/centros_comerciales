@@ -137,17 +137,17 @@ def delimitar_busqueda_establecimientos(
     Esta parte realiza una delimitación según %PROVINCIA%/%CANTON%/%PARROQUIA% en los que el centro_comercial se encuentra.
     """
 
-    parroquias_posibles_regexp = "|".join(parroquias_posibles.split(","))
+    parroquias_posibles_regexp = "|".join(parroquias_posibles)
     regexp_ppc = (
         r"(?i)^\s*"
         + f"{provincia}"
         + r"\s*/\s*"
         + f"{canton}"
         + r"\s*/\s*("
-        + f"{parroquias_posibles_regexp}"
+        + f".*{parroquias_posibles_regexp}.*"
         + r")"
     )
-    nombres_calles = perimetro_calles.split(",")
+    nombres_calles = perimetro_calles
     nombres_significativos = []
 
     for nombre_calle in nombres_calles:
@@ -159,13 +159,7 @@ def delimitar_busqueda_establecimientos(
 
     regexp_calles = r"(?i)(" + "|".join(nombres_significativos) + ")"
     if param_verbose:
-        mensaje_verbose = (
-            f"Para delimitar {cc_nombre} usamos las siguientes [bold]regexp:\n",
-            "[blue bold]regexp provincia, canton, parroquia: ",
-            regexp_ppc,
-            "[blue bold]regexp perimetro calles: ",
-            regexp_calles,
-        )
+        mensaje_verbose = f"Para delimitar {cc_nombre} usamos las siguientes [bold]regexp:\n[blue bold]regexp provincia, canton, parroquia:[/blue bold]\t\t[green]{regexp_ppc}[/green]\n[blue bold]regexp perimetro calles:[/blue bold]\t\t[green]{regexp_calles}[/green]"
         Console().print(mensaje_verbose)
 
     try:
@@ -216,6 +210,14 @@ def delimitar_busqueda_establecimientos(
             )
             .collect()
         )
+        if param_verbose:
+            tamano_original = (
+                pl.scan_parquet(ruta_base_rucs_sri).select(pl.count()).collect()[0, 0]
+            )
+            tamano_delimitacion = len(base_rucs_cerca)
+            Console().print(
+                f"Se ha delimitado la base_rucs_sri, obteniendo {tamano_delimitacion} de {tamano_original} la tabla original."
+            )
     except ColumnNotFoundError as e:
         raise ColumnNotFoundError(e)
     except PolarsError as e:
@@ -320,7 +322,7 @@ def nearness_mapping(
     tb: pl.DataFrame,
     columna_direccion: str,
     perimetro_calles: str,
-    palabras_contexto: str,
+    set_contexto: set,
 ) -> pl.DataFrame:
     """
     Asigna o agrupa valores de direcciones en un DataFrame según proximidad o similitud.
@@ -338,7 +340,7 @@ def nearness_mapping(
         pl.DataFrame: Una copia del DataFrame original con la columna de direcciones procesada,
         mostrando valores agrupados o mapeados según proximidad o similitud.
     """
-    calles_principales = perimetro_calles.split(",")
+    calles_principales = perimetro_calles
 
     def _calcular_score_regexp(direccion: str) -> Tuple[float, str]:
         if not direccion:
@@ -369,8 +371,6 @@ def nearness_mapping(
             nombres_significativos.extend(palabras_significativas)
         for calle in nombres_significativos:
             set_principales.add(calle.lower())
-
-        set_contexto = set(palabras_contexto)
 
         suma_scores = 0.0
 
@@ -404,8 +404,10 @@ def nearness_mapping(
 
 def encontrar_locales(
     cc_metadata: Tuple[str, str],
+    threshold_filtro: float,
     threshold: float = 0.8,
     param_verbose: bool = False,
+    frecuencia_minima: int = 1,
 ):
     """
     Busca locales en un centro comercial según una palabra clave.
@@ -432,7 +434,7 @@ def encontrar_locales(
     cc_nombre_cc_base = cc_metadata[0]
     cc_palabra_clave = cc_metadata[1]
     perimetro_calles_cc = None
-    palabras_contexto_cc = None
+    set_contexto_cc = None
     RUTA_base_info_cc = None
     # Establecer la conexion con la base del proyecto
     with console.status(
@@ -444,7 +446,7 @@ def encontrar_locales(
             RUTA_base_rucs_sri = RUTAS["rucs_sri"]
 
             inicio_conexion_base_info_cc = time.perf_counter()
-            base = duckdb.connect(RUTA_base_info_cc)
+            base = duckdb.connect(RUTA_base_info_cc, read_only=True)
             base.query("SELECT 1 FROM locales LIMIT 1")
             fin_conexion_base_info_cc = time.perf_counter()
             if param_verbose:
@@ -490,7 +492,6 @@ def encontrar_locales(
                     canton_cc,
                     parroquias_posibles_cc,
                     perimetro_calles_cc,
-                    palabras_contexto_cc,
                 ) = row
                 rucs_cerca = delimitar_busqueda_establecimientos(
                     ruta_base_rucs_sri=ruta_base_rucs_sri,
@@ -511,15 +512,28 @@ def encontrar_locales(
 
             # En esta sección normalizamos todos los locales que hayamos podido extraer.
             try:
-                condado_nombres = (
+                cc_nombres = (
                     base.query(
                         f"SELECT DISTINCT local_CC FROM locales WHERE centro_comercial = '{cc_nombre_cc_base}';"
                     )
                 ).df()["local_CC"]
-                set_nombres_fantasia = set(condado_nombres)
+                set_nombres_fantasia = set(cc_nombres)
                 set_nombres_fantasia_normalizado = {
                     _normalizar(local) for local in set_nombres_fantasia
                 }
+                contexto_cc = base.query(f"""
+                    SELECT 
+                        palabra 
+                    FROM (
+                        SELECT 
+                            centro_comercial, 
+                            unnest(struct_contexto)['palabra'] AS palabra, 
+                            unnest(struct_contexto)['frecuencia'] AS frecuencia 
+                        FROM centros_comerciales
+                    ) 
+                    WHERE frecuencia >= {frecuencia_minima} AND centro_comercial = '{cc_nombre_cc_base}';
+                    """).df()["palabra"]
+                set_contexto_cc = set(contexto_cc)
             except duckdb.DataError as e:
                 console.log(
                     f"[red]Se ha encontrado un error al encontrar los 'nombre_fantasia_comercial' a encontrar pero que en la base se llama 'local_CC':\n{e}"
@@ -568,16 +582,20 @@ def encontrar_locales(
                 threshold_lev_qgram=threshold,
                 cc=cc_palabra_clave,
             )
-            if (not perimetro_calles_cc) or (not palabras_contexto_cc):
+            if (not perimetro_calles_cc) or (type(set_contexto_cc) is not set):
                 raise ValueError(
                     f"No se pudo encontrar información sobre calles y 'contexto' para {cc_nombre_cc_base}"
                 )
+
+            #             tabla_final = tabla_filt_qgram_nom_fantasia.with_columns(
+            #                 pl.lit(1).alias("score_direccion")
+            #             )
 
             tabla_final = nearness_mapping(
                 tabla_filt_qgram_nom_fantasia,
                 "direccion_completa",
                 perimetro_calles=perimetro_calles_cc,
-                palabras_contexto=palabras_contexto_cc,
+                set_contexto=set_contexto_cc,
             )
 
             tabla_final = tabla_final.with_columns(
@@ -587,12 +605,18 @@ def encontrar_locales(
                     "score_producto_final"
                 )
             )
+            tabla_final = tabla_final.filter(
+                pl.col("score_producto_final") >= threshold_filtro
+            )
             fin_mapping = time.perf_counter()
-            status.update(
-                f"[bold white] Se logró mappear una tabla de {numero_registros} registros con {numero_candidatos_para_el_mapping} candidatos para mapping sobre la columna 'nombre_fantasia_comercial'."
+            console.log(
+                f"[white]Se logró mappear una tabla de [bold]{numero_registros}[/bold] registros con [bold]{numero_candidatos_para_el_mapping}[/bold] candidatos para mapping sobre la columna 'nombre_fantasia_comercial'."
             )
             console.log(
-                f"[white]Conexion Exitosa a info_cc.db!\nTiempo: {fin_mapping - inicio_mapping:.4f} segundos"
+                f"[white]Se ha filtrado por score y se tienen [bold]{len(tabla_final)}[/bold] candidatos"
+            )
+            console.log(
+                f"[white]Conexion Exitosa a info_cc.db!\nProcesamiento exitoso!\nTiempo: {fin_mapping - inicio_mapping:.4f} segundos"
             )
         except Exception as e:
             console.log(f"[red]Hubo un error al realizar el mappeo:\n{e}")
