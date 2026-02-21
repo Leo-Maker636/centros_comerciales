@@ -13,7 +13,7 @@ Igual que para la otra tabla este es el procedimiento de carga
 
 CREATE TABLE centros_comerciales (
   centro_comercial VARCHAR(100) CHECK(
-    centro_comercial IN (
+centro_comercial IN (
       'Paseo Shopping', 
       'El Jardin', 
       'Mall del Sol', 
@@ -117,10 +117,13 @@ CREATE TABLE locales (
 Paso final para tener tablas llenas.
 */
 
-INSERT INTO centros_comerciales (
+INSERT INTO centros_comerciales (centro_comercial, provincia, canton, parroquia, perimetro_calles, struct_contexto) (
   SELECT 
-    * EXCLUDE (parroquia, struct_contexto), 
+    centro_comercial,
+    provincia,
+    canton,
     CAST(parroquia AS VARCHAR[]) AS parroquia, 
+    CAST(perimetro_calles AS VARCHAR[]) AS perimetro_calles,
     CAST(struct_contexto AS STRUCT(palabra VARCHAR, frecuencia VARCHAR)[])  struct_contexto 
   FROM read_csv("centros_comerciales.psv", sep="|")
 );
@@ -132,6 +135,11 @@ INSERT INTO centros_comerciales (
 Paso final para tener tablas llenas.
 */
 INSERT INTO locales (
-  SELECT * FROM locales_temp
+  SELECT 
+    local_CC,
+    centro_comercial,
+    categoria
+  FROM locales_temp
 );
+
 DROP TABLE locales_temp;

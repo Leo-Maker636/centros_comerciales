@@ -143,9 +143,9 @@ def delimitar_busqueda_establecimientos(
         + f"{provincia}"
         + r"\s*/\s*"
         + f"{canton}"
-        + r"\s*/\s*("
-        + f".*{parroquias_posibles_regexp}.*"
-        + r")"
+        + r"\s*/\s*.*("
+        + f"{parroquias_posibles_regexp}"
+        + r").*"
     )
     nombres_calles = perimetro_calles
     nombres_significativos = []
