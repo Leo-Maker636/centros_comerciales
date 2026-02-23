@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from contextlib import closing
 from mysql.connector import ProgrammingError
 from concurrent.futures import ProcessPoolExecutor, as_completed
-import mysql.connector, os, sqlparse, re
+import mysql.connector, os, sqlparse, re, shutil
 from importlib.resources import files, as_file
 
 
@@ -67,7 +67,7 @@ def guardar_resultados(
     fecha: str,
     cur: Any,
     RUTA_backups: Path,
-    batch_size: int = 80000,
+    batch_size: int = 2_000_000,
 ):
     """
     Ejecuta un query en MySQL, obtiene los resultados en batches, y los guarda como archivo Parquet.
@@ -82,30 +82,43 @@ def guardar_resultados(
     console = Console()
     cur.execute(query)
 
-    all_rows = []
+    total_filas = 0
+    i = 0
     while True:
+        i += 1
         rows = cur.fetchmany(batch_size)
         if not rows:
             break
-        all_rows.extend(rows)  # acumula todas las filas en memoria
+        # Obtener nombres de columnas
+        columnas = [desc[0] for desc in cur.description]
 
-    total_filas = len(all_rows)
+        # Convertir a LazyFrame de Polars
+        df_polars = pl.LazyFrame(rows, schema=columnas, orient="row")
+
+        # Guardar como parquet en modo streaming
+        df_polars.sink_parquet(
+            RUTA_backups / f"facturas_{fecha}_{i}.parquet",
+            engine="streaming",
+            mkdir=True,
+        )
+        total_filas += len(rows)
+
     if total_filas == 0:
         console.print(f"[yellow] No hay datos para guardar para {fecha}[/yellow]")
         return
 
     console.print(f"[green] Se obtuvieron {total_filas} filas en total[/green]")
 
-    # Obtener nombres de columnas
-    columnas = [desc[0] for desc in cur.description]
-
-    # Convertir a LazyFrame de Polars
-    df_polars = pl.LazyFrame(all_rows, schema=columnas, orient="row")
-
-    # Guardar como parquet en modo streaming
-    df_polars.sink_parquet(
-        RUTA_backups / f"facturas_{fecha}.parquet", engine="streaming", mkdir=True
+    tablas = []
+    for ruta in RUTA_backups.glob(f"facturas_{fecha}_*.parquet"):
+        tabla = pl.scan_parquet(ruta)
+        tablas.append(tabla)
+    tabla_final = pl.concat(tablas)
+    tabla_final.sink_parquet(
+        RUTA_backups / f"facturas_{fecha}.parquet", engine="streaming"
     )
+    for ruta in RUTA_backups.glob(f"facturas_{fecha}_*.parquet"):
+        ruta.unlink()
 
     console.print(
         f"[blue in cyan] Archivo guardado en {RUTA_backups / f'facturas_{fecha}.parquet'}[/blue in cyan]"
@@ -158,6 +171,8 @@ def leer_y_guardar_datos_mysql(
 ):
     RUTA_sql_executables = resolver_rutas()["RUTA_sql_executables"]
     RUTA_backups = resolver_rutas()["RUTA_backups"]
+    if RUTA_backups.exists():
+        shutil.rmtree(RUTA_backups)
     console = Console()
     id_establecimientos_a_buscar_sql = ",".join(
         [ruc for ruc in id_establecimientos_a_buscar]
@@ -165,12 +180,10 @@ def leer_y_guardar_datos_mysql(
 
     try:
         if not ruta_credenciales_data_fact.exists():
-            console.print()
             raise FileNotFoundError(
                 "No se ha encontrado el archivo de variables de entorno."
             )
         if not RUTA_sql_executables.exists():
-            console.print()
             raise FileNotFoundError(
                 "No se ha encontrado el archivo de traida sql que debe llamarse `consulta_formato.sql`."
             )
@@ -183,11 +196,20 @@ def leer_y_guardar_datos_mysql(
             for q in sql_text.split(";")
             if q.strip()
         ]
-        dummy_query = queries[0]
+        dummy_id_establecimientos_a_buscar_sql = (
+            ",".join(id_establecimientos_a_buscar[0:2])
+            + f", ...{len(id_establecimientos_a_buscar)}..., "
+            + ",".join(id_establecimientos_a_buscar[-3:-1])
+        )
+        dummy_query = (
+            sql_text.split(";")[0]
+            .strip()
+            .replace("{rucs_a_buscar}", dummy_id_establecimientos_a_buscar_sql)
+        )
         if param_verbose:
             console.print(f"Una query de ejemplo es:\n{dummy_query}")
 
-        with ProcessPoolExecutor(max_workers=6) as executor:
+        with ProcessPoolExecutor(max_workers=4) as executor:
             futures = [
                 executor.submit(
                     procesar_query,

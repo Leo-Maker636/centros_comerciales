@@ -1,5 +1,5 @@
 " Script para generar y mostrar queries SQL con saltos de línea
-for y in range(2024, 2025)
+for y in range(2025, 2025)
   for m in range(1, 12)
 
     let lineas = [

@@ -32,6 +32,13 @@ def resolver_rutas() -> Dict[str, Path]:
             raise FileNotFoundError(
                 f"No se encontró el directorio de la base info_cc.db    (SE INTENTO ENCONTRAR ESTE DIRECTORIO {RUTA_base_info_cc.resolve()})"
             )
+        RUTA_resultado_busqueda_rucs = (
+            RUTA_PROYECTO.parent / "bases/resultado_busqueda_rucs.psv"
+        )
+        if not RUTA_resultado_busqueda_rucs.exists():
+            raise FileNotFoundError(
+                f"No se encontró el directorio de los resultados de busqueda rucs.    (SE INTENTO ENCONTRAR ESTE DIRECTORIO {RUTA_resultado_busqueda_rucs.resolve()})"
+            )
         RUTA_backups = RUTA_PROYECTO / "backups"
         RUTA_salida_pivote = RUTA_PROYECTO.parent / "resultado_pivote.xlsx"
     except FileNotFoundError as e:
@@ -40,6 +47,7 @@ def resolver_rutas() -> Dict[str, Path]:
     return {
         "info_cc": RUTA_base_info_cc,
         "RUTA_backups": RUTA_backups,
+        "RUTA_resultado_busqueda_rucs": RUTA_resultado_busqueda_rucs,
         "RUTA_salida_pivote": RUTA_salida_pivote,
     }
 
@@ -59,10 +67,10 @@ def concatenar(conexion_duckdb: Any, param_verbose: bool):
                 [str(ruta.resolve()) for ruta in RUTA_backups.glob("*.parquet")]
             )
             console.print(
-                f"[blue]La concatenación se hará entre estos archivos:\n{archivos_a_concatenar}"
+                f"[blue in white]La concatenación se hará entre estos archivos:\n{archivos_a_concatenar}"
             )
         placeholder_parquets_concat = str(RUTA_backups) + "/" + "*.parquet"
-        conexion_duckdb.execute("DROP TABLE facturacion_cc;")
+        conexion_duckdb.execute("DROP TABLE IF EXISTS facturacion_cc;")
         conexion_duckdb.execute(f"""
             CREATE TABLE facturacion_cc AS (
                 SELECT 
@@ -103,15 +111,17 @@ def pivotear_tabla(
         pivote["id_establecimiento"] = conexion_duckdb.execute(f"""
             PIVOT(
                 SELECT 
-                    rbr.centro_comercial,
-                    rbr.local_CC,
+                    lcl.centro_comercial,
+                    lcl.local_CC,
                     rbr.id_establecimiento,
-                    strftime(fcc.fecha, "%Y/%m") AS periodo,
+                    strftime(fcc.fecha, '%Y/%m') AS periodo,
                     SUM(fcc.total) AS total,
-                FROM '{RUTA_resultado_busqueda_rucs}' rbr
+                FROM read_csv('{RUTA_resultado_busqueda_rucs}', sep='|') rbr
                 LEFT JOIN facturacion_cc fcc
-                ON lcl.id_establecimiento = rbr.id_establecimiento
-                GROUP BY id_establecimiento
+                ON fcc.id_establecimiento = rbr.id_establecimiento
+                LEFT JOIN locales lcl
+                ON lcl.local_CC = rbr.mejor_candidato
+                GROUP BY rbr.id_establecimiento, lcl.centro_comercial, lcl.local_CC, fcc.fecha
             )
             ON periodo
             USING SUM(total)
@@ -119,14 +129,16 @@ def pivotear_tabla(
         pivote["categoria"] = conexion_duckdb.execute(f"""
             PIVOT(
                 SELECT 
-                    rbr.centro_comercial,
-                    rbr.local_CC,
-                    strftime(fcc.fecha, "%Y/%m") AS periodo,
+                    lcl.centro_comercial,
+                    lcl.categoria,
+                    strftime(fcc.fecha, '%Y/%m') AS periodo,
                     SUM(fcc.total) AS total,
-                FROM '{RUTA_resultado_busqueda_rucs}' rbr
+                FROM read_csv('{RUTA_resultado_busqueda_rucs}', sep='|') rbr
                 LEFT JOIN facturacion_cc fcc
-                ON lcl.id_establecimiento = rbr.id_establecimiento
-                GROUP BY categoria
+                ON fcc.id_establecimiento = rbr.id_establecimiento
+                LEFT JOIN locales lcl
+                ON lcl.local_CC = rbr.mejor_candidato
+                GROUP BY lcl.categoria, lcl.centro_comercial, fcc.fecha
             )
             ON periodo
             USING SUM(total)
@@ -134,19 +146,21 @@ def pivotear_tabla(
         pivote["centro_comercial"] = conexion_duckdb.execute(f"""
             PIVOT(
                 SELECT 
-                    rbr.centro_comercial,
-                    strftime(fcc.fecha, "%Y/%m") AS periodo,
+                    lcl.centro_comercial,
+                    strftime(fcc.fecha, '%Y/%m') AS periodo,
                     SUM(fcc.total) AS total,
-                FROM '{RUTA_resultado_busqueda_rucs}' rbr
+                FROM read_csv('{RUTA_resultado_busqueda_rucs}', sep='|') rbr
                 LEFT JOIN facturacion_cc fcc
-                ON lcl.id_establecimiento = rbr.id_establecimiento
-                GROUP BY centro_comercial
+                ON fcc.id_establecimiento = rbr.id_establecimiento
+                LEFT JOIN locales lcl
+                ON lcl.local_CC = rbr.mejor_candidato
+                GROUP BY lcl.centro_comercial, fcc.fecha
             )
             ON periodo
             USING SUM(total)
             """).pl()
     except duckdb.Error as e:
-        console.print(f"[red]No se pudo pivotear los resultados, porque:\n{e}")
+        console.print(f"[red]\nNo se pudo pivotear los resultados, porque:\n{e}")
     return pivote
 
 

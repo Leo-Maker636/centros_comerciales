@@ -4,7 +4,9 @@ from rich.console import Console
 from rich.markup import escape
 import argparse
 import polars as pl
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
+from pathlib import Path
+from importlib.resources import files, as_file
 
 # Lista de centros comerciales y sus palabras clave
 CENTROS_COMERCIALES: List[Tuple[str, str]] = [
@@ -20,6 +22,39 @@ CENTROS_COMERCIALES: List[Tuple[str, str]] = [
     ("Quicentro", "quicentro"),
     ("Mall del Pacifico", "pacifico"),
 ]
+
+
+def resolver_rutas() -> Dict[str, Path]:
+    try:
+        METARUTA_PACKAGE = files(
+            "transformar_fact"
+        )  # IMPORTANTE! Mover con cuidado esto, para no romper el proyecto
+        # Importante en el pyproject.toml dice:
+        # [tool.setuptools.packages.find]
+        # where = ["src"]
+        # POR ESO LA RUTA DEL PAQUETE REALMENTE ES 'busqueda_rucs/src/busqueda_rucs' Y 'busqueda_rucs/' ES LA
+        # RUTA DEL PROYECTO
+        RUTA_PROYECTO = None
+        with as_file(METARUTA_PACKAGE) as RUTA_PACKAGE:
+            RUTA_PROYECTO = RUTA_PACKAGE.parent.parent  # Esta el la ruta busqueda_rucs/
+
+        if not RUTA_PROYECTO:
+            raise FileNotFoundError(
+                "No se encontró el directorio de la base info_cc.db   (NO SE PUDO OBTENER INFORMACIÓN EN EL CONTEXT MANAGER PARA LA RUTA DEL PROYECTO)"
+            )
+        elif not RUTA_PROYECTO.exists():
+            raise FileNotFoundError(
+                "No se encontró el directorio de la base info_cc.db   (NO SE PUDO OBTENER LA RUTA DEL PROYECTO)"
+            )
+        RUTA_resultado_busqueda_rucs = (
+            RUTA_PROYECTO.parent / "bases/resultado_busqueda_rucs.psv"
+        )
+    except FileNotFoundError as e:
+        raise FileNotFoundError(e)
+
+    return {
+        "RUTA_resultado_busqueda_rucs": RUTA_resultado_busqueda_rucs,
+    }
 
 
 def mapping(nombre_cc: str) -> Optional[Tuple[str, str]]:
@@ -85,9 +120,25 @@ def procesar_cc(cc_nombre: str, verbose: bool, threshold_filtro: float) -> pl.Da
 
 def main():
     console = Console()
+    rutas = resolver_rutas()
     args = parse_args()
     verbose = args.verbose
-    centros_comerciales = args.cc
+    if args.cc == ["a"]:
+        centros_comerciales = [
+            "Recreo",
+            "Condado Shopping",
+            "Mall del Sol",
+            "San Marino",
+            "Paseo Shopping",
+            "Mall de los Andes",
+            "Portal Shopping",
+            "Paseo San Francisco",
+            "El Jardin",
+            "Quicentro",
+            "Mall del Pacifico",
+        ]
+    else:
+        centros_comerciales = args.cc
     threshold_filtro_lista = args.filter
     default_filter = 0.0
     while len(threshold_filtro_lista) < len(centros_comerciales):
@@ -100,7 +151,7 @@ def main():
             exec.submit(
                 procesar_cc, centros_comerciales[i], verbose, threshold_filtro_lista[i]
             ): i
-            for i, _ in enumerate(args.cc)
+            for i, _ in enumerate(centros_comerciales)
         }
 
         for future in as_completed(futuros):
@@ -119,6 +170,9 @@ def main():
                 console.print(logs)
             tablas.append(tabla_cc)
     tabla_resultado = pl.concat(tablas)
+    RUTA_resultado_busqueda_rucs = rutas["RUTA_resultado_busqueda_rucs"]
+    tabla_resultado.write_csv(RUTA_resultado_busqueda_rucs, separator="|")
+    console.print(f"Se ha impreso es resultado en {RUTA_resultado_busqueda_rucs}.")
 
 
 if __name__ == "__main__":

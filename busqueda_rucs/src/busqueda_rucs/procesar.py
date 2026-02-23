@@ -199,11 +199,13 @@ def delimitar_busqueda_establecimientos(
                     (pl.lit("0") + pl.col("numero_ruc").cast(pl.Int64).cast(pl.String))
                 )
                 .alias("numero_ruc"),
+                pl.col("id_establecimiento").cast(pl.Int64).alias("id_establecimiento"),
             )
             .select(
                 pl.col("numero_ruc"),
                 pl.col("razon_social"),
                 pl.col("numero_establecimiento"),
+                pl.col("id_establecimiento"),
                 pl.col("nombre_fantasia_comercial"),
                 pl.col("direccion_completa"),
                 pl.col("estado_contribuyente"),
@@ -299,7 +301,7 @@ def fuzzy_mapping(
 
         elif (score >= minimumthreshold) & (cc in s.lower()):
             return mejor, 1.0
-        return "", score
+        return mejor, score
 
     dict_qgramas_bias = {local: _qgrams(_normalizar(local)) for local in set_bias}
 
